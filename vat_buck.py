@@ -29,6 +29,28 @@ from bfsccylinder.quadrature import get_points_weights
 
 
 def va_2nd_order(x, T0, T1, T2, phi, L):
+    """
+    Calculates the angle at a given point x within a linear system, based on second-order
+    polynomial interpolation of angles defined at three equidistant points along the system's length.
+
+    The function takes the angles at these points (T0, T1, T2) and an initial offset angle (phi),
+    all in degrees, along with the system's total length (L), to compute the interpolated angle at x.
+
+    Parameters:
+    - x (float): The point at which the angle is to be calculated.
+    - T0 (float): The angle at the first reference point, in degrees.
+    - T1 (float): The angle at the midpoint, in degrees.
+    - T2 (float): The angle at the last reference point, in degrees.
+    - phi (float): An initial offset angle, in degrees.
+    - L (float): The total length of the linear domain.
+
+    Returns:
+    - float: The interpolated angle at point x, in degrees.
+
+    Note:
+    The reference points for interpolation are determined as follows: the first point (x0) at the start,
+    the second point (x1) at the midpoint, and the third point (x2) at the end of the linear domain.
+    """
     x0 = 0
     x1 = L/2
     x2 = 3*L/3
@@ -44,6 +66,24 @@ def va_2nd_order(x, T0, T1, T2, phi, L):
 
 
 def theta_VAT_P_x(x, L, theta_ctrl):
+    """
+    Calculates piecewise linear interpolated angles at specified positions within a linear domain
+    divided into segments. This function uses a set of control angles for interpolation, with a distinct
+    scheme for the first and second halves of the domain.
+
+    Parameters:
+    - x (numpy.ndarray): An array of positions at which the angles are to be calculated.
+    - L (float): The total length of the linear domain.
+    - theta_ctrl (tuple of floats): A tuple of three control angles (theta_VP_1, theta_VP_2, theta_VP_3).
+
+    Returns:
+    - numpy.ndarray: An array of interpolated angles at the positions specified by x, matching the shape of x.
+
+    The interpolation uses a distinct set of linear functions for positions in the first half (x <= L/2)
+    and the second half (x > L/2) of the domain. The function defines five equidistant control points along
+    the domain and applies the control angles differently based on the position's location relative to the
+    domain's midpoint.
+    """
     theta_VP_1, theta_VP_2, theta_VP_3 = theta_ctrl
     x1 = 0
     x2 = L/4
@@ -67,7 +107,7 @@ def theta_VAT_P_x(x, L, theta_ctrl):
 
 def optim_test(desvars, geo_prop=None, mat_prop=None, ny=60, vol_only=False,
                out_mesh=False, balanced=True, theta_func=theta_VAT_P_x, cg_x0=None, lobpcg_X=None):
-
+    # TODO Refactor this function. It is too long and has too many parameters
     if geo_prop is None:
         # Geometric Parameters(m)
         geo_prop = dict(
@@ -347,6 +387,28 @@ def optim_test(desvars, geo_prop=None, mat_prop=None, ny=60, vol_only=False,
 
 
 def objective_function(design_load, out):
+    """
+    Calculates the objective value for a structural design optimization problem, based on the design's 
+    load-bearing capacity relative to a given design load and its material efficiency.
+
+    The objective function is designed to be minimized, promoting designs that are both efficient in 
+    material usage and capable of safely bearing the applied loads.
+
+    Parameters:
+    - design_load (float): The magnitude of the load for which the design is optimized, in relevant units.
+    - out (dict): A dictionary containing results from structural analysis, including:
+      - 'Pcr' (float): The critical load capacity of the structure, indicating the load at which failure
+        due to buckling or another critical mode is expected.
+      - 'rel_vol' (float): The relative volume of the structure, serving as a measure of material efficiency.
+
+    Returns:
+    - objective (float): The calculated objective value, representing a balance between load-bearing 
+      capacity and material efficiency. This value is to be minimized in the optimization process.
+
+    Raises:
+    - AssertionError: If the calculated objective value is not greater than 0, indicating an error in
+      input values or calculation.
+    """
     lbd = 0.95*abs(out['Pcr'])/abs(design_load)
     factor = max(1, 1/lbd**2)
     objective = factor*out['rel_vol']

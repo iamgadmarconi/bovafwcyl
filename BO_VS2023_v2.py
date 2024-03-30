@@ -10,33 +10,54 @@ from sklearn.metrics import mean_squared_error, r2_score
 
 from vat_buck import optim_test, objective_function
 
+global INPUT_VARS, X, Y, model, geo_dict, mat_dict, y_norm
+
+MAX_LAYERS = 3
+INPUT_VARS = MAX_LAYERS * 4
+
+
 def sort_desvar(desvars: list) -> list:
     """
-    Sorts the given list of desvars and performs some calculations on each element.
+    Processes and transforms a list of design variables for multiple layers in a design, applying specific
+    transformations to each group of three variables. Each group represents parameters for a single layer,
+    and the function applies a scaling factor and adjustments to these parameters.
+
+    The transformations include multiplying each design variable by 89, and for the first and third variables
+    in each group, taking their absolute values. The resulting transformed variables are then rounded to two
+    decimal places.
 
     Parameters:
-        desvars (list): The list of desvars to be sorted.
+    - desvars (list): A list of numerical design variables, assumed to be in groups of three, where each group
+                      corresponds to a set of parameters for one layer in the design.
 
     Returns:
-        list: The sorted and modified list of desvars.
+    - np.ndarray: A 2D NumPy array of the processed design variables, with each row representing the transformed
+                  variables for one layer. The values are rounded to two decimal places.
     """
     desvars2 = []
     for i in range(MAX_LAYERS):
         T1, T2, T3 = desvars[3*i:3*(i+1)] * 89 # TODO Check if implementation is correct
+        # T1, T2, T3 = [x * 89 for x in desvars[3*i:3*(i+1)]] Alternative implementation
         desvars2.append([abs(T1), T2, abs(T3)])
     return np.around(desvars2, 2)
 
 
 def surrogate(model, X: list) -> list:
     """
-    Surrogate or approximation for the objective function
+    Predicts outcomes using a given model based on provided inputs, focusing on the mean predictions.
+
+    By only considering the mean predictions, it simplifies the output for scenarios where detailed uncertainty 
+    estimation (e.g., through standard deviations) is not critical.
 
     Parameters:
-        model (object): The trained model used for prediction.
-        X (array-like): The input data for prediction.
+    - model: The predictive model that is used for making predictions. The model should support a `predict`
+             method that can return both mean and standard deviation of the predictions when supplied with
+             `return_std=True`.
+    - X (list): A list of inputs on which predictions are to be made. The structure and content of these inputs
+                should be compatible with the model's requirements.
 
     Returns:
-        array-like: The predicted mean values.
+    - list: A list of mean predictions for the given inputs `X`.
     """
     with catch_warnings():
         simplefilter("ignore")
@@ -47,15 +68,21 @@ def surrogate(model, X: list) -> list:
 
 def acq_MPI(X: list, Xsamples: list, model):
     """
-    Calculate the probability of improvement for a given set of samples.
+    Calculates the Probability of Improvement (MPI) acquisition function for a set of samples,
+    using a surrogate model.
 
     Parameters:
-        X (array-like): The input data for prediction.
-        Xsamples (array-like): The set of samples to evaluate.
-        model: The surrogate model.
+    - X (array-like): The input data used for prediction to find the current best solution.
+    - Xsamples (array-like): The set of new sample points to evaluate for improvement.
+    - model: The surrogate model used for predictions. The model should support a `predict`
+             method that returns both mean and standard deviation when `return_std=True` is specified.
 
     Returns:
-        probs: The probability of improvement for each sample.
+    - numpy.ndarray: An array containing the probability of improvement for each sample in `Xsamples`.
+
+    The function computes the current best solution based on the surrogate model's predictions for `X`,
+    then calculates the mean and standard deviation of predictions for `Xsamples`. The probability of
+    improvement is computed for each sample.
     """
     # calculate the best surrogate score found so far
     yhat = surrogate(model, X)
@@ -68,22 +95,25 @@ def acq_MPI(X: list, Xsamples: list, model):
 
 
 def acq_EI(X, Xsamples, model, xi=0.01):
-    '''
-    from:http://krasserm.github.io/2018/03/21/bayesian-optimization/
-    Computes the expected improvement at points X based on existing samples X_sample
-    and Y_sample using a Gaussian process surrogate model.
+    """
+    Based on: http://krasserm.github.io/2018/03/21/bayesian-optimization/
+    Computes the expected improvement (EI) at points X using a Gaussian Process Regression (GPR) model.
+    EI is an acquisition function used in Bayesian optimization to balance exploration and exploitation
+    by identifying points where improvement over the current best is most expected.
 
     Parameters:
-        X: Points at which EI shall be computed (m x d).
-        X_sample: Sample locations (n x d).
-        Y_sample: Sample values (n x 1).
-        gpr: A GaussianProcessRegressor fitted to samples.
-        xi: Exploitation-exploration trade-off parameter.
+        X (numpy.ndarray): Points at which EI shall be computed (m x d).
+        Xsamples (numpy.ndarray): Sample locations used for reshaping within the function.
+        model: A GaussianProcessRegressor fitted to samples, used to predict mean and standard deviation.
+        xi (float): Exploitation-exploration trade-off parameter.
 
     Returns:
-        Expected improvements at points X.
+        numpy.ndarray: Expected improvements at points X.
 
-    '''
+    Notes:
+    - This implementation is tailored for minimization problems. For maximization, adjustments may be required.
+    - The function handles points with near-zero standard deviation by setting their EI to zero, avoiding numerical issues.
+    """
     mu, sigma = model.predict(X, return_std=True)
     Xsamples = Xsamples.reshape(len(Xsamples), -1)
     # Ysamples,_ = surrogate(model, Xsamples)
@@ -105,15 +135,21 @@ def acq_EI(X, Xsamples, model, xi=0.01):
 
 def acq_LCB(xsample, model, exploration_weight=0.3):
     """
-    Computes the GP-Lower Confidence Bound
+    Computes the Lower Confidence Bound (LCB) acquisition function for a set of input samples using a Gaussian
+    Process (GP) surrogate model. The LCB function is designed to balance exploration and exploitation in Bayesian
+    optimization, favoring regions of the input space with lower predicted values (for minimization) and higher
+    uncertainty.
 
     Parameters:
-        xsample: The input sample.
-        model: The surrogate model.
-        exploration_weight: The exploration weight.
+    - xsample: Input samples for which the LCB is computed. Can be a single sample or multiple samples in a batch.
+    - model: The surrogate GP model used for predictions. Must implement a `predict` method that returns mean and
+             standard deviation with `return_std=True`.
+    - exploration_weight (float, optional): Controls the trade-off between exploitation and exploration. Higher values
+             encourage exploration in areas with high uncertainty. Defaults to 0.3.
 
     Returns:
-        The lower confidence bound.
+    - numpy.ndarray: The calculated Lower Confidence Bound for each input sample. Lower values of LCB indicate
+                     regions more favorable for exploration or exploitation, based on the exploration weight.
     """
 
     m, s = model.predict(xsample, return_std=True)
@@ -127,19 +163,22 @@ def acq_LCB(xsample, model, exploration_weight=0.3):
 # optimize the acquisition function
 def opt_acquisition(X, y, op, model, Acq_fun="LCB", weight=-1, seed_val=6):
     """
-    Optimize the acquisition function.
+    Optimizes an acquisition function to select the next sampling point for evaluation.
+    This process involves generating random samples within defined parameters, evaluating
+    their feasibility, and selecting the best sample based on the chosen acquisition function.
 
     Parameters:
-        X: The input data for prediction.
-        y: The output data for prediction.
-        op: The optimization parameters.
-        model: The surrogate model.
-        Acq_fun: The acquisition function to use.
-        weight: The weight to use for the acquisition function.
-        seed_val: The seed value for the random number generator.
+        X (array-like): Input data for prediction, used by certain acquisition functions.
+        y (array-like): Output data corresponding to X, for updating models or acquisition functions.
+        op: Optimization parameters defining the search space and constraints.
+        model: The surrogate model used for prediction and guiding the optimization.
+        Acq_fun (str): The acquisition function to use, with options 'MPI', 'EI', or 'LCB'.
+        weight (float): A parameter influencing the acquisition function, especially for 'EI' and 'LCB'.
+        seed_val (int): Seed value for random number generation, ensuring reproducibility.
 
     Returns:
-        The optimized acquisition function. # TODO Check if this is correct
+        The input sample from the generated set that optimizes the acquisition function, suggested as
+        the next point for function evaluation in the optimization process.
     """
     # random search, generate random samples
     # TODO check whether the starting points should be random
@@ -178,14 +217,21 @@ def opt_acquisition(X, y, op, model, Acq_fun="LCB", weight=-1, seed_val=6):
 
 def random_desvar(op, seed_val=6):
     """
-    Generate a random sample of desvars.
+    Generates a set of random samples of design variables using Latin Hypercube Sampling (LHS). This method
+    is utilized to efficiently explore a wide parameter space with a relatively small number of samples.
 
     Parameters:
-        op: The optimization parameters.
-        seed_val: The seed value for the random number generator.
+        op (dict): Optimization parameters containing:
+            - 'space': An object describing the dimensions of the parameter space, typically including bounds.
+            - 'n_samples': The number of random samples to generate.
+        seed_val (int): Seed value for the random number generator to ensure reproducibility.
 
     Returns:
-        The random sample of desvars.
+        numpy.ndarray: An array of random samples of design variables, where each row represents a sample. 
+                       Samples are rounded to five decimal places.
+
+    The function leverages the 'classic' Latin Hypercube Sampling method to generate samples, which are then 
+    processed and returned in a consistent format for further use in optimization routines.
     """
     lhs = Lhs(lhs_type="classic", criterion=None)
     X = lhs.generate(op['space'].dimensions, n_samples=op['n_samples'], random_state=seed_val)
@@ -199,10 +245,16 @@ def random_desvar(op, seed_val=6):
 
 def k_fold_chk(IP_times):
     """
-    Perform k-fold cross-validation on the model.
+    Perform k-fold cross-validation on the model a specified number of times and report performance metrics.
 
     Parameters:
-        IP_times: The number of times to perform the cross-validation.
+        model: The machine learning model to be evaluated. (GLOBAL VARIABLE)
+        X: The input features dataset. (GLOBAL VARIABLE)
+        Y: The target dataset. (GLOBAL VARIABLE)
+        IP_times: The number of times to perform the cross-validation process.
+
+    Returns:
+        A dictionary containing the average and variance of log marginal likelihood, R2 score, and mean squared error.
     """
     kf = KFold(n_splits=5, shuffle=True)
     train_pop = IP_times
@@ -229,10 +281,11 @@ def k_fold_chk(IP_times):
 
 
 if __name__ == '__main__':
-    MAX_LAYERS = 3
+    
     ny = {'init': 30, 'opt': 30, 'ver': 30}
 
-    layers_loads = ((1,  50e3),
+    layers_loads = (
+                    (1,  50e3),
                     (2, 100e3),
                     (2, 200e3),
                     (2, 500e3),
@@ -240,11 +293,13 @@ if __name__ == '__main__':
                     (3, 500e3),
                     (3, 1000e3),
                     (4, 500e3),
-                    (4, 1000e3))
+                    (4, 1000e3)
+    )
+
     for MAX_LAYERS, design_load in layers_loads:
         # ___________________________________________________________
         ## INPUTS
-        global INPUT_VARS, X, Y, model, geo_dict, mat_dict, y_norm
+        
 
         # Geometric Parameters(m)
         geo_dict = dict(
@@ -268,7 +323,8 @@ if __name__ == '__main__':
 
         # Optimizer parameters
 
-        INPUT_VARS = MAX_LAYERS * 4
+        
+
         ini_times = 10  # No of times of Input variables initial sample is
         ini_pop_size = ini_times * INPUT_VARS  # No of Initial points for GP fit
         n_samples = int(ini_pop_size/5)  # int(ini_pop_size/5)          	# Population size when optimizing
